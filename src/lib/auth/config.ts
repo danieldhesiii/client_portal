@@ -7,6 +7,9 @@ import type { Role } from "@prisma/client";
  * logic is added in `auth.ts`, which runs in the Node.js runtime.
  */
 export const authConfig = {
+  // Trust the deployment host (Vercel sets the URL; required behind proxies and
+  // for preview deployments). Harmless on localhost.
+  trustHost: true,
   session: { strategy: "jwt" },
   pages: {
     signIn: "/login",
