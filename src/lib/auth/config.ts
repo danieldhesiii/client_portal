@@ -39,8 +39,8 @@ export const authConfig = {
       const isAuthPage = pathname === "/login";
       const isPublic =
         pathname === "/" ||
-        pathname.startsWith("/tracker.js") ||
-        pathname.startsWith("/api/collect") ||
+        pathname.startsWith("/va.js") ||
+        pathname.startsWith("/api/event") ||
         pathname.startsWith("/api/auth");
 
       if (isPublic) return true;

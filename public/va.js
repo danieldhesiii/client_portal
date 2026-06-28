@@ -1,6 +1,6 @@
 /*!
  * Vylora X analytics tracker — cookieless, privacy-first, < 3KB gzipped.
- * Embed:  <script defer data-site="SITE_ID" src="https://portal.vylorax.com/tracker.js"></script>
+ * Embed:  <script defer data-site="SITE_ID" src="https://portal.vylorax.com/va.js"></script>
  *
  * Design goals:
  *  - Never break the host site: every path is wrapped so failures are silent.
@@ -21,7 +21,7 @@
     // is copy-paste portable across hosts.
     var endpoint;
     try {
-      endpoint = new URL(script.src).origin + "/api/collect";
+      endpoint = new URL(script.src).origin + "/api/event";
     } catch (e) {
       return;
     }

@@ -12,7 +12,7 @@ export function EmbedSnippet({
   publicId: string;
   appUrl: string;
 }) {
-  const snippet = `<script defer data-site="${publicId}" src="${appUrl}/tracker.js"></script>`;
+  const snippet = `<script defer data-site="${publicId}" src="${appUrl}/va.js"></script>`;
   const [copied, setCopied] = useState(false);
 
   async function copy() {

@@ -29,14 +29,14 @@ Tailwind v4, Recharts, and the Geist font.
 
 Three parts:
 
-1. **Tracking snippet** — [`public/tracker.js`](public/tracker.js). Vanilla JS,
+1. **Tracking snippet** — [`public/va.js`](public/va.js). Vanilla JS,
    no dependencies, < 3KB gzipped, cookieless. Captures page views + session
    data and beacons them to the ingestion endpoint, tagged with a `siteId`.
    SPA-aware (hooks `pushState`/`replaceState`/`popstate`), tracks session
    duration via heartbeats + a `sendBeacon` on page hide, and **fails silently**
    so it can never break the host site.
 
-2. **Ingestion API** — [`/api/collect`](src/app/api/collect/route.ts). Validates
+2. **Ingestion API** — [`/api/event`](src/app/api/event/route.ts). Validates
    the payload, derives approximate geo from the request IP, **anonymises the IP
    immediately** (a daily-rotating hash → `visitorId`), parses the user agent,
    filters bots, rate-limits, and stores a clean `Event`.
@@ -142,7 +142,7 @@ Paste this just before `</body>` on any page of the client's site (the snippet
 is shown ready-to-copy in the Admin area per site):
 
 ```html
-<script defer data-site="SITE_ID" src="https://portal.vylorax.com/tracker.js"></script>
+<script defer data-site="SITE_ID" src="https://portal.vylorax.com/va.js"></script>
 ```
 
 - Works on any stack — static HTML, WordPress, React, Vue, etc.
@@ -152,7 +152,7 @@ is shown ready-to-copy in the Admin area per site):
 - SPA route changes are tracked automatically.
 
 To test locally end-to-end: run the app, create a site, and drop the snippet
-(pointing `src` at `http://localhost:3000/tracker.js`, with
+(pointing `src` at `http://localhost:3000/va.js`, with
 `data-track-localhost="true"`) onto any local HTML page. Page views appear in
 the dashboard within seconds, including in the realtime panel.
 
@@ -239,7 +239,7 @@ across days, per-site separation, no raw IP leakage), and date-range math.
 ## Project structure
 
 ```
-public/tracker.js              # the embeddable tracking snippet
+public/va.js              # the embeddable tracking snippet
 prisma/
   schema.prisma                # data model
   seed.ts                      # admin + demo client + 30 days of data
@@ -249,7 +249,7 @@ src/
       dashboard/               # client analytics dashboard
       admin/                   # admin: clients, sites, logins, embed snippets
     api/
-      collect/                 # ingestion endpoint
+      event/                   # ingestion endpoint
       sites/[siteId]/realtime/ # realtime polling endpoint
       cron/rollup/             # daily aggregation job
       auth/[...nextauth]/      # Auth.js handlers

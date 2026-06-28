@@ -5,7 +5,7 @@ import { authConfig } from "@/lib/auth/config";
 export const { auth: middleware } = NextAuth(authConfig);
 
 export const config = {
-  // Run on everything except Next internals and static assets. /tracker.js and
-  // /api/collect are explicitly treated as public inside authConfig.authorized.
+  // Run on everything except Next internals and static assets. /va.js and
+  // /api/event are explicitly treated as public inside authConfig.authorized.
   matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\..*).*)"],
 };
