@@ -1,0 +1,241 @@
+import { Prisma } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
+import { assertSiteAccess } from "./access";
+import type { DateRange } from "@/lib/date-range";
+import { eachHourOfInterval, eachDayOfInterval, startOfDay, startOfHour } from "date-fns";
+
+/**
+ * Analytics read layer. Every exported function calls `assertSiteAccess(siteId)`
+ * first, so a CLIENT can never query a site outside their organization even if
+ * they forge a siteId. Queries run against raw Event rows for accuracy; the
+ * DailyStat rollups (see rollup.ts) back the longer-range performance path.
+ */
+
+export type Stat = { value: number; previous: number };
+
+export type OverviewStats = {
+  visitors: Stat;
+  pageviews: Stat;
+  avgDurationMs: Stat;
+  bounceRate: Stat; // 0..1
+};
+
+export type TimeseriesPoint = { time: string; visitors: number; pageviews: number };
+
+export type Breakdown = { label: string; value: number };
+
+// --- helpers ---------------------------------------------------------------
+
+function rangeWhere(siteId: string, from: Date, to: Date): Prisma.Sql {
+  return Prisma.sql`"siteId" = ${siteId} AND "type" = 'PAGEVIEW'::"EventType" AND "timestamp" >= ${from} AND "timestamp" <= ${to}`;
+}
+
+async function uniqueVisitors(siteId: string, from: Date, to: Date): Promise<number> {
+  const rows = await prisma.$queryRaw<{ count: bigint }[]>`
+    SELECT COUNT(DISTINCT "visitorId") AS count
+    FROM "Event"
+    WHERE ${rangeWhere(siteId, from, to)}`;
+  return Number(rows[0]?.count ?? 0);
+}
+
+async function pageviewCount(siteId: string, from: Date, to: Date): Promise<number> {
+  return prisma.event.count({
+    where: { siteId, type: "PAGEVIEW", timestamp: { gte: from, lte: to } },
+  });
+}
+
+async function avgDuration(siteId: string, from: Date, to: Date): Promise<number> {
+  const rows = await prisma.$queryRaw<{ avg: number | null }[]>`
+    SELECT AVG("durationMs")::float AS avg
+    FROM "Event"
+    WHERE "siteId" = ${siteId}
+      AND "type" = 'SESSION_END'::"EventType"
+      AND "durationMs" IS NOT NULL
+      AND "timestamp" >= ${from} AND "timestamp" <= ${to}`;
+  return Math.round(rows[0]?.avg ?? 0);
+}
+
+async function bounceRate(siteId: string, from: Date, to: Date): Promise<number> {
+  // A "bounce" is a session with exactly one pageview.
+  const rows = await prisma.$queryRaw<{ sessions: bigint; bounces: bigint }[]>`
+    SELECT
+      COUNT(*) AS sessions,
+      COUNT(*) FILTER (WHERE views = 1) AS bounces
+    FROM (
+      SELECT "sessionId", COUNT(*) AS views
+      FROM "Event"
+      WHERE ${rangeWhere(siteId, from, to)}
+      GROUP BY "sessionId"
+    ) s`;
+  const sessions = Number(rows[0]?.sessions ?? 0);
+  const bounces = Number(rows[0]?.bounces ?? 0);
+  return sessions === 0 ? 0 : bounces / sessions;
+}
+
+// --- public API ------------------------------------------------------------
+
+export async function getOverviewStats(
+  siteId: string,
+  range: DateRange,
+): Promise<OverviewStats> {
+  await assertSiteAccess(siteId);
+  const { from, to, prevFrom, prevTo } = range;
+
+  const [
+    visitors,
+    prevVisitors,
+    pageviews,
+    prevPageviews,
+    dur,
+    prevDur,
+    bounce,
+    prevBounce,
+  ] = await Promise.all([
+    uniqueVisitors(siteId, from, to),
+    uniqueVisitors(siteId, prevFrom, prevTo),
+    pageviewCount(siteId, from, to),
+    pageviewCount(siteId, prevFrom, prevTo),
+    avgDuration(siteId, from, to),
+    avgDuration(siteId, prevFrom, prevTo),
+    bounceRate(siteId, from, to),
+    bounceRate(siteId, prevFrom, prevTo),
+  ]);
+
+  return {
+    visitors: { value: visitors, previous: prevVisitors },
+    pageviews: { value: pageviews, previous: prevPageviews },
+    avgDurationMs: { value: dur, previous: prevDur },
+    bounceRate: { value: bounce, previous: prevBounce },
+  };
+}
+
+export async function getTimeseries(
+  siteId: string,
+  range: DateRange,
+): Promise<TimeseriesPoint[]> {
+  await assertSiteAccess(siteId);
+  const { from, to, granularity } = range;
+  const unit = granularity === "hour" ? "hour" : "day";
+
+  const rows = await prisma.$queryRaw<
+    { bucket: Date; pageviews: bigint; visitors: bigint }[]
+  >`
+    SELECT
+      date_trunc(${unit}, "timestamp") AS bucket,
+      COUNT(*) AS pageviews,
+      COUNT(DISTINCT "visitorId") AS visitors
+    FROM "Event"
+    WHERE ${rangeWhere(siteId, from, to)}
+    GROUP BY bucket
+    ORDER BY bucket ASC`;
+
+  const map = new Map<number, { pageviews: number; visitors: number }>();
+  for (const r of rows) {
+    map.set(new Date(r.bucket).getTime(), {
+      pageviews: Number(r.pageviews),
+      visitors: Number(r.visitors),
+    });
+  }
+
+  // Zero-fill so the chart has a continuous axis.
+  const buckets =
+    granularity === "hour"
+      ? eachHourOfInterval({ start: startOfHour(from), end: to })
+      : eachDayOfInterval({ start: startOfDay(from), end: to });
+
+  return buckets.map((b) => {
+    const hit = map.get(b.getTime());
+    return {
+      time: b.toISOString(),
+      pageviews: hit?.pageviews ?? 0,
+      visitors: hit?.visitors ?? 0,
+    };
+  });
+}
+
+/** Generic top-N breakdown for a single column, ignoring null/empty values. */
+async function breakdownBy(
+  siteId: string,
+  range: DateRange,
+  column: Prisma.Sql,
+  limit = 8,
+): Promise<Breakdown[]> {
+  const { from, to } = range;
+  const rows = await prisma.$queryRaw<{ label: string | null; value: bigint }[]>`
+    SELECT ${column} AS label, COUNT(*) AS value
+    FROM "Event"
+    WHERE ${rangeWhere(siteId, from, to)}
+    GROUP BY label
+    ORDER BY value DESC
+    LIMIT ${limit + 5}`;
+  return rows
+    .filter((r) => r.label != null && r.label !== "")
+    .slice(0, limit)
+    .map((r) => ({ label: r.label as string, value: Number(r.value) }));
+}
+
+export async function getTopPages(siteId: string, range: DateRange) {
+  await assertSiteAccess(siteId);
+  return breakdownBy(siteId, range, Prisma.sql`"path"`);
+}
+
+export async function getReferrers(siteId: string, range: DateRange) {
+  await assertSiteAccess(siteId);
+  return breakdownBy(siteId, range, Prisma.sql`"referrer"`);
+}
+
+export async function getUtmSources(siteId: string, range: DateRange) {
+  await assertSiteAccess(siteId);
+  return breakdownBy(siteId, range, Prisma.sql`"utmSource"`);
+}
+
+export async function getCountries(siteId: string, range: DateRange) {
+  await assertSiteAccess(siteId);
+  return breakdownBy(siteId, range, Prisma.sql`"country"`);
+}
+
+export async function getCities(siteId: string, range: DateRange) {
+  await assertSiteAccess(siteId);
+  return breakdownBy(siteId, range, Prisma.sql`"city"`);
+}
+
+export async function getBrowsers(siteId: string, range: DateRange) {
+  await assertSiteAccess(siteId);
+  return breakdownBy(siteId, range, Prisma.sql`"browser"`);
+}
+
+export async function getOperatingSystems(siteId: string, range: DateRange) {
+  await assertSiteAccess(siteId);
+  return breakdownBy(siteId, range, Prisma.sql`"os"`);
+}
+
+export async function getDeviceTypes(siteId: string, range: DateRange) {
+  await assertSiteAccess(siteId);
+  return breakdownBy(siteId, range, Prisma.sql`"deviceType"::text`);
+}
+
+/** Visitors active in the last 5 minutes, plus a small live page breakdown. */
+export async function getRealtime(siteId: string) {
+  await assertSiteAccess(siteId);
+  const since = new Date(Date.now() - 5 * 60 * 1000);
+
+  const [visitorsRow, topPages] = await Promise.all([
+    prisma.$queryRaw<{ count: bigint }[]>`
+      SELECT COUNT(DISTINCT "visitorId") AS count
+      FROM "Event"
+      WHERE "siteId" = ${siteId} AND "timestamp" >= ${since}`,
+    prisma.$queryRaw<{ label: string; value: bigint }[]>`
+      SELECT "path" AS label, COUNT(DISTINCT "visitorId") AS value
+      FROM "Event"
+      WHERE "siteId" = ${siteId} AND "type" = 'PAGEVIEW'::"EventType"
+        AND "timestamp" >= ${since}
+      GROUP BY "path"
+      ORDER BY value DESC
+      LIMIT 6`,
+  ]);
+
+  return {
+    activeVisitors: Number(visitorsRow[0]?.count ?? 0),
+    topPages: topPages.map((r) => ({ label: r.label, value: Number(r.value) })),
+  };
+}

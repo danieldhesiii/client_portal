@@ -1,0 +1,152 @@
+// Vylora X Portal — Prisma schema
+// Multi-tenant, privacy-first website analytics.
+//
+// Tenancy model:
+//   Organization (a client business) 1──* Site 1──* Event
+//   Organization 1──* User (logins; role ADMIN or CLIENT)
+// An ADMIN user sees everything. A CLIENT user sees only sites owned by their
+// organization. This is enforced in the data-access layer (src/lib/data/).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  // Pooled connection (PgBouncer) for app/runtime queries.
+  url       = env("DATABASE_URL")
+  // Direct connection for migrations / schema changes (Prisma can't run those
+  // through a transaction pooler). Optional: with Neon you can point both at
+  // the same URL. With Supabase use the port 5432 direct string here.
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  ADMIN
+  CLIENT
+}
+
+enum EventType {
+  PAGEVIEW
+  HEARTBEAT
+  SESSION_END
+}
+
+enum DeviceType {
+  desktop
+  mobile
+  tablet
+  unknown
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users User[]
+  sites Site[]
+}
+
+model User {
+  id             String   @id @default(cuid())
+  email          String   @unique
+  name           String?
+  passwordHash   String
+  role           Role     @default(CLIENT)
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([organizationId])
+}
+
+model Site {
+  id             String   @id @default(cuid())
+  // publicId is the value embedded in the tracking snippet (data-site="...").
+  // Kept distinct from the internal id so it can be rotated without breaking FKs.
+  publicId       String   @unique
+  name           String
+  domain         String
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  events     Event[]
+  dailyStats DailyStat[]
+
+  @@index([organizationId])
+}
+
+model Event {
+  id           String     @id @default(cuid())
+  siteId       String
+  site         Site       @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  type         EventType  @default(PAGEVIEW)
+
+  // Privacy-preserving identifiers. visitorId = hash(ip + ua + siteId + dailySalt).
+  // No raw IP is ever stored. sessionId is generated client-side.
+  visitorId    String
+  sessionId    String
+
+  path         String
+  referrer     String?
+  utmSource    String?
+  utmMedium    String?
+  utmCampaign  String?
+
+  // Approximate, location-only geo derived from IP server-side (IP then discarded).
+  country      String?
+  region       String?
+  city         String?
+
+  browser      String?
+  os           String?
+  deviceType   DeviceType @default(unknown)
+  screenWidth  Int?
+  language     String?
+
+  // For SESSION_END events: total session duration in milliseconds.
+  durationMs   Int?
+
+  timestamp    DateTime   @default(now())
+
+  @@index([siteId, timestamp])
+  @@index([siteId, type, timestamp])
+  @@index([siteId, visitorId, timestamp])
+  @@index([sessionId])
+}
+
+// Pre-aggregated daily rollups so historical dashboard ranges stay fast at volume.
+// One row per (site, day). Breakdowns are stored as JSON maps {key: count}.
+model DailyStat {
+  id             String   @id @default(cuid())
+  siteId         String
+  site           Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  date           DateTime @db.Date
+
+  pageviews      Int      @default(0)
+  visitors       Int      @default(0)
+  sessions       Int      @default(0)
+  bounces        Int      @default(0)
+  totalDurationMs BigInt  @default(0)
+
+  // JSON breakdown maps: { "value": count }
+  topPages       Json     @default("{}")
+  referrers      Json     @default("{}")
+  countries      Json     @default("{}")
+  cities         Json     @default("{}")
+  browsers       Json     @default("{}")
+  operatingSystems Json   @default("{}")
+  deviceTypes    Json     @default("{}")
+  utmSources     Json     @default("{}")
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([siteId, date])
+  @@index([siteId, date])
+}

@@ -1,0 +1,38 @@
+name: Update knowledge graph
+
+# Rebuilds the graphify knowledge graph on every push to main and publishes
+# graph.html + graph.json as a downloadable build artifact. This is the
+# reliable replacement for a "post-push" git hook (which git does not support).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {} # allow manual runs from the Actions tab
+
+jobs:
+  build-graph:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install graphify
+        run: pip install graphifyy
+
+      - name: Build knowledge graph (structural / AST)
+        run: python scripts/build_graph.py .
+
+      - name: Export interactive HTML
+        run: graphify export html || true
+
+      - name: Upload graph artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: knowledge-graph
+          path: |
+            graphify-out/graph.html
+            graphify-out/graph.json
+            graphify-out/GRAPH_REPORT.md
+          if-no-files-found: warn
