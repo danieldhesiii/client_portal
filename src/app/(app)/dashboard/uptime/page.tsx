@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { format } from "date-fns";
+import { getCurrentUser } from "@/lib/data/access";
 import { resolveDashboardContext } from "@/lib/data/dashboard-context";
 import {
   getUptimeSummary,
@@ -49,6 +50,12 @@ export default async function UptimeSection({
 }: {
   searchParams: Promise<{ site?: string; range?: string }>;
 }) {
+  // Uptime monitoring is an agency-only view; clients must never see it, even
+  // by navigating to the URL directly. Gate before any data is loaded.
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+  if (user.role !== "ADMIN") redirect("/dashboard");
+
   const ctx = await resolveDashboardContext(await searchParams);
   if (!ctx) redirect("/dashboard");
   const { site, range, rangeKey } = ctx;

@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import { listAccessibleSites } from "@/lib/data/access";
+import { getCurrentUser, listAccessibleSites } from "@/lib/data/access";
 import { SectionNav } from "@/components/dashboard/section-nav";
 
 /**
@@ -13,7 +13,11 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const sites = await listAccessibleSites();
+  const [user, sites] = await Promise.all([
+    getCurrentUser(),
+    listAccessibleSites(),
+  ]);
+  const isAdmin = user?.role === "ADMIN";
 
   // No sites: skip the nav entirely and let the page render its empty state.
   if (sites.length === 0) return <>{children}</>;
@@ -23,7 +27,10 @@ export default async function DashboardLayout({
       <aside className="lg:w-56 lg:shrink-0">
         <div className="lg:sticky lg:top-20">
           <Suspense fallback={<div className="h-64" />}>
-            <SectionNav sites={sites.map((s) => ({ id: s.id, name: s.name }))} />
+            <SectionNav
+              sites={sites.map((s) => ({ id: s.id, name: s.name }))}
+              isAdmin={isAdmin}
+            />
           </Suspense>
         </div>
       </aside>

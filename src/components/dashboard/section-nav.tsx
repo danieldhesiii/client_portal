@@ -32,6 +32,8 @@ type AnalyticsItem = {
   metric: keyof DashboardSummary;
   suffix: string;
   live?: boolean;
+  // Agency-only sections; hidden from CLIENT logins (also gated server-side).
+  adminOnly?: boolean;
 };
 
 type SupportItem = {
@@ -50,7 +52,7 @@ const ANALYTICS: AnalyticsItem[] = [
   { href: "/dashboard/audience", label: "Audience", icon: Users, metric: "languages", suffix: "languages" },
   { href: "/dashboard/devices", label: "Devices", icon: MonitorSmartphone, metric: "browsers", suffix: "browsers" },
   { href: "/dashboard/realtime", label: "Realtime", icon: Activity, metric: "active", suffix: "active now", live: true },
-  { href: "/dashboard/uptime", label: "Uptime", icon: ShieldCheck, metric: "errors", suffix: "errors" },
+  { href: "/dashboard/uptime", label: "Uptime", icon: ShieldCheck, metric: "errors", suffix: "errors", adminOnly: true },
 ];
 
 // Support options are driven by the shared catalogue so adding one is a single
@@ -162,9 +164,18 @@ function NavRow({
   );
 }
 
-export function SectionNav({ sites }: { sites: NavSite[] }) {
+export function SectionNav({
+  sites,
+  isAdmin = false,
+}: {
+  sites: NavSite[];
+  isAdmin?: boolean;
+}) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
+
+  // Drop agency-only rows (e.g. Uptime) for client logins.
+  const analyticsItems = ANALYTICS.filter((s) => isAdmin || !s.adminOnly);
 
   const siteId = searchParams.get("site") ?? sites[0]?.id ?? "";
   const range = searchParams.get("range") ?? "7d";
@@ -203,7 +214,7 @@ export function SectionNav({ sites }: { sites: NavSite[] }) {
     return `${href}?${params.toString()}`;
   }
 
-  const analyticsActive = ANALYTICS.some((s) => isActive(pathname, s.href));
+  const analyticsActive = analyticsItems.some((s) => isActive(pathname, s.href));
   const supportActive = SUPPORT.some((s) => isActive(pathname, s.href));
 
   return (
@@ -213,7 +224,7 @@ export function SectionNav({ sites }: { sites: NavSite[] }) {
         icon={BarChart3}
         defaultOpen={analyticsActive || !supportActive}
       >
-        {ANALYTICS.map((s) => {
+        {analyticsItems.map((s) => {
           const value = summary ? summary[s.metric] : null;
           return (
             <NavRow

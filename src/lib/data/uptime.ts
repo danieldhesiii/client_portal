@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { assertSiteAccess } from "./access";
+import { assertSiteAccess, requireAdmin } from "./access";
 import type { DateRange } from "@/lib/date-range";
 
 /**
@@ -80,6 +80,9 @@ export async function getUptimeSummary(
   siteId: string,
   range: DateRange,
 ): Promise<UptimeSummary> {
+  // Uptime is an agency-only view; enforce it here too so the role check can't
+  // be bypassed by any future caller, not just the (admin-gated) page.
+  await requireAdmin();
   await assertSiteAccess(siteId);
   const { from, to } = range;
   const checks = await prisma.uptimeCheck.findMany({
@@ -136,6 +139,7 @@ export async function getUptimeDaily(
   siteId: string,
   range: DateRange,
 ): Promise<DayAvailability[]> {
+  await requireAdmin();
   await assertSiteAccess(siteId);
   const { from, to } = range;
   const rows = await prisma.$queryRaw<
@@ -168,6 +172,7 @@ export async function getUptimeIncidents(
   range: DateRange,
   limit = 10,
 ): Promise<Incident[]> {
+  await requireAdmin();
   await assertSiteAccess(siteId);
   const { from, to } = range;
   return prisma.uptimeCheck.findMany({
@@ -191,6 +196,7 @@ export async function getComponentHealth(
   range: DateRange,
   limit = 12,
 ): Promise<ComponentHealth[]> {
+  await requireAdmin();
   await assertSiteAccess(siteId);
   const { from, to } = range;
   const rows = await prisma.$queryRaw<
@@ -219,6 +225,7 @@ export async function getClientErrors(
   range: DateRange,
   limit = 8,
 ): Promise<ClientError[]> {
+  await requireAdmin();
   await assertSiteAccess(siteId);
   const { from, to } = range;
   const rows = await prisma.$queryRaw<
