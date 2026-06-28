@@ -30,6 +30,7 @@ enum EventType {
   PAGEVIEW
   HEARTBEAT
   SESSION_END
+  ERROR
 }
 
 enum DeviceType {
@@ -39,14 +40,34 @@ enum DeviceType {
   unknown
 }
 
+enum SupportType {
+  CONTACT
+  WEBSITE_EDIT
+  BUG_REPORT
+  BILLING
+}
+
+enum SupportStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+}
+
+enum SupportPriority {
+  LOW
+  NORMAL
+  HIGH
+}
+
 model Organization {
   id        String   @id @default(cuid())
   name      String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users User[]
-  sites Site[]
+  users           User[]
+  sites           Site[]
+  supportRequests SupportRequest[]
 }
 
 model User {
@@ -59,6 +80,9 @@ model User {
   organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+
+  supportRequests SupportRequest[]
+  supportReplies  SupportReply[]
 
   @@index([organizationId])
 }
@@ -75,8 +99,10 @@ model Site {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  events     Event[]
-  dailyStats DailyStat[]
+  events          Event[]
+  dailyStats      DailyStat[]
+  supportRequests SupportRequest[]
+  uptimeChecks    UptimeCheck[]
 
   @@index([organizationId])
 }
@@ -111,6 +137,13 @@ model Event {
 
   // For SESSION_END events: total session duration in milliseconds.
   durationMs   Int?
+
+  // For ERROR events (real-user monitoring): what failed on the page. errorHost
+  // is the hostname of a failed resource/fetch — i.e. a "component" the site
+  // depends on. errorKind is one of "resource" | "fetch" | "js".
+  errorKind    String?
+  errorHost    String?
+  errorMessage String?
 
   timestamp    DateTime   @default(now())
 
@@ -149,4 +182,76 @@ model DailyStat {
 
   @@unique([siteId, date])
   @@index([siteId, date])
+}
+
+// Client-raised support tickets: general "Contact us" messages and "Website
+// edit" requests. Raised by a CLIENT login, scoped to their organization, and
+// actioned by the agency (ADMIN) from the Admin inbox.
+model SupportRequest {
+  id             String          @id @default(cuid())
+  type           SupportType
+  status         SupportStatus   @default(OPEN)
+  priority       SupportPriority @default(NORMAL)
+
+  subject        String
+  message        String
+  // For WEBSITE_EDIT requests: the page the change relates to (optional).
+  pageUrl        String?
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  // Optional site the request relates to; kept if the site is later removed.
+  siteId         String?
+  site           Site?        @relation(fields: [siteId], references: [id], onDelete: SetNull)
+  // Who raised it. Denormalised email survives the user being deleted.
+  createdById    String?
+  createdBy      User?        @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdByEmail String
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  replies        SupportReply[]
+
+  @@index([organizationId, createdAt])
+  @@index([status, createdAt])
+}
+
+// One message in a support request's conversation. The request's own `message`
+// is the opening message (always from the client); every SupportReply after it
+// is a back-and-forth turn between the client and the agency (ADMIN).
+model SupportReply {
+  id          String         @id @default(cuid())
+  requestId   String
+  request     SupportRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  // Author. Denormalised email + role survive the user being deleted and let
+  // the UI label each turn without an extra join.
+  authorId    String?
+  author      User?          @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  authorEmail String
+  authorRole  Role
+
+  body        String
+  createdAt   DateTime       @default(now())
+
+  @@index([requestId, createdAt])
+}
+
+// Synthetic availability checks: one row per ping of a site's own URL by the
+// uptime cron (/api/cron/uptime). `ok` is true when a response < 500 came back
+// in time; otherwise `error` holds the failure reason. Powers the Uptime page.
+model UptimeCheck {
+  id         String   @id @default(cuid())
+  siteId     String
+  site       Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  ok         Boolean
+  statusCode Int?
+  responseMs Int?
+  error      String?
+
+  checkedAt  DateTime @default(now())
+
+  @@index([siteId, checkedAt])
 }

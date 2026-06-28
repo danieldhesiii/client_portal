@@ -4,7 +4,9 @@ import type { EventType } from "@prisma/client";
 /** Wire schema for the tracker payload. Lenient but bounded to resist abuse. */
 export const collectSchema = z.object({
   siteId: z.string().min(1).max(64),
-  type: z.enum(["pageview", "heartbeat", "session_end"]).default("pageview"),
+  type: z
+    .enum(["pageview", "heartbeat", "session_end", "error"])
+    .default("pageview"),
   sessionId: z.string().min(1).max(64),
   path: z.string().min(1).max(2048),
   referrer: z.string().max(2048).nullish(),
@@ -14,6 +16,10 @@ export const collectSchema = z.object({
   screenWidth: z.number().int().positive().max(20000).nullish(),
   language: z.string().max(35).nullish(),
   durationMs: z.number().int().nonnegative().max(86_400_000).nullish(),
+  // Real-user monitoring fields, only sent with type "error".
+  errorKind: z.enum(["resource", "fetch", "js"]).nullish(),
+  errorHost: z.string().max(255).nullish(),
+  errorMessage: z.string().max(500).nullish(),
 });
 
 export type CollectPayload = z.infer<typeof collectSchema>;
@@ -22,6 +28,7 @@ const TYPE_MAP: Record<CollectPayload["type"], EventType> = {
   pageview: "PAGEVIEW",
   heartbeat: "HEARTBEAT",
   session_end: "SESSION_END",
+  error: "ERROR",
 };
 
 export function toEventType(t: CollectPayload["type"]): EventType {

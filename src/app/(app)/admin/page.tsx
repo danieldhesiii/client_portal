@@ -2,10 +2,13 @@ import { redirect } from "next/navigation";
 import { Trash2 } from "lucide-react";
 import { getCurrentUser } from "@/lib/data/access";
 import { listOrganizations, adminSiteOverview } from "@/lib/data/admin";
+import { listAllSupportRequests } from "@/lib/data/support";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge, EmptyState } from "@/components/ui/misc";
 import { Button } from "@/components/ui/button";
 import { EmbedSnippet } from "@/components/admin/embed-snippet";
+import { SupportInbox } from "@/components/admin/support-inbox";
+import { AutoRefresh } from "@/components/auto-refresh";
 import {
   NewOrgForm,
   NewSiteForm,
@@ -26,13 +29,16 @@ export default async function AdminPage() {
   if (user.role !== "ADMIN") redirect("/dashboard");
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
-  const [orgs, overview] = await Promise.all([
+  const [orgs, overview, supportRequests] = await Promise.all([
     listOrganizations(),
     adminSiteOverview(30),
+    listAllSupportRequests(),
   ]);
 
   return (
     <div className="space-y-8">
+      {/* Live: new client messages and replies appear without a manual refresh. */}
+      <AutoRefresh interval={8000} />
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Admin</h1>
         <p className="text-sm text-muted-foreground">
@@ -78,6 +84,9 @@ export default async function AdminPage() {
           </div>
         )}
       </section>
+
+      {/* Support inbox */}
+      <SupportInbox requests={supportRequests} viewerEmail={user.email} />
 
       {/* New client */}
       <section>

@@ -224,6 +224,121 @@ export async function getDeviceTypes(siteId: string, range: DateRange, limit = 8
   return breakdownBy(siteId, range, Prisma.sql`"deviceType"::text`, limit);
 }
 
+export async function getLanguages(siteId: string, range: DateRange, limit = 8) {
+  await assertSiteAccess(siteId);
+  return breakdownBy(siteId, range, Prisma.sql`"language"`, limit);
+}
+
+/**
+ * Top entry ("ASC") or exit ("DESC") pages: the first/last pageview path of
+ * each session. `DISTINCT ON ("sessionId")` keeps one row per session ordered
+ * by time, then we count those paths. Ties broken by id so the pick is stable.
+ */
+async function sessionEdgePages(
+  siteId: string,
+  range: DateRange,
+  order: "ASC" | "DESC",
+  limit: number,
+): Promise<Breakdown[]> {
+  const { from, to } = range;
+  const dir = order === "ASC" ? Prisma.sql`ASC` : Prisma.sql`DESC`;
+  const rows = await prisma.$queryRaw<{ label: string; value: bigint }[]>`
+    SELECT label, COUNT(*) AS value
+    FROM (
+      SELECT DISTINCT ON ("sessionId") "path" AS label
+      FROM "Event"
+      WHERE ${rangeWhere(siteId, from, to)}
+      ORDER BY "sessionId", "timestamp" ${dir}, "id" ${dir}
+    ) edges
+    GROUP BY label
+    ORDER BY value DESC
+    LIMIT ${limit}`;
+  return rows.map((r) => ({ label: r.label, value: Number(r.value) }));
+}
+
+export async function getEntryPages(siteId: string, range: DateRange, limit = 8) {
+  await assertSiteAccess(siteId);
+  return sessionEdgePages(siteId, range, "ASC", limit);
+}
+
+export async function getExitPages(siteId: string, range: DateRange, limit = 8) {
+  await assertSiteAccess(siteId);
+  return sessionEdgePages(siteId, range, "DESC", limit);
+}
+
+/** Visitors bucketed into responsive breakpoints by reported screen width. */
+export async function getScreenSizes(
+  siteId: string,
+  range: DateRange,
+): Promise<Breakdown[]> {
+  await assertSiteAccess(siteId);
+  const { from, to } = range;
+  const rows = await prisma.$queryRaw<{ label: string; value: bigint }[]>`
+    SELECT
+      CASE
+        WHEN "screenWidth" < 640 THEN 'Mobile'
+        WHEN "screenWidth" < 1024 THEN 'Tablet'
+        WHEN "screenWidth" < 1440 THEN 'Laptop'
+        ELSE 'Desktop'
+      END AS label,
+      COUNT(*) AS value
+    FROM "Event"
+    WHERE ${rangeWhere(siteId, from, to)} AND "screenWidth" IS NOT NULL
+    GROUP BY label
+    ORDER BY value DESC`;
+  return rows.map((r) => ({ label: r.label, value: Number(r.value) }));
+}
+
+export type Engagement = {
+  sessions: number;
+  pagesPerSession: number;
+  avgSessionMs: number;
+  bounceRate: number; // 0..1
+};
+
+/** Session-level engagement metrics for the Behavior section. */
+export async function getEngagement(
+  siteId: string,
+  range: DateRange,
+): Promise<Engagement> {
+  await assertSiteAccess(siteId);
+  const { from, to } = range;
+  const [rows, dur, bounce] = await Promise.all([
+    prisma.$queryRaw<{ sessions: bigint; pageviews: bigint }[]>`
+      SELECT COUNT(DISTINCT "sessionId") AS sessions, COUNT(*) AS pageviews
+      FROM "Event"
+      WHERE ${rangeWhere(siteId, from, to)}`,
+    avgDuration(siteId, from, to),
+    bounceRate(siteId, from, to),
+  ]);
+  const sessions = Number(rows[0]?.sessions ?? 0);
+  const pageviews = Number(rows[0]?.pageviews ?? 0);
+  return {
+    sessions,
+    pagesPerSession: sessions === 0 ? 0 : pageviews / sessions,
+    avgSessionMs: dur,
+    bounceRate: bounce,
+  };
+}
+
+/** Pageviews per hour-of-day (0–23, UTC) — a 24-length array for the heatbar. */
+export async function getActivityByHour(
+  siteId: string,
+  range: DateRange,
+): Promise<number[]> {
+  await assertSiteAccess(siteId);
+  const { from, to } = range;
+  const rows = await prisma.$queryRaw<{ hour: number; value: bigint }[]>`
+    SELECT EXTRACT(HOUR FROM "timestamp")::int AS hour, COUNT(*) AS value
+    FROM "Event"
+    WHERE ${rangeWhere(siteId, from, to)}
+    GROUP BY hour
+    ORDER BY hour`;
+  const buckets = Array.from({ length: 24 }, () => 0);
+  for (const r of rows) buckets[r.hour] = Number(r.value);
+  return buckets;
+}
+
 export type DashboardSummary = {
   visitors: number;
   pageviews: number;
@@ -231,6 +346,9 @@ export type DashboardSummary = {
   referrers: number;
   countries: number;
   browsers: number;
+  sessions: number;
+  languages: number;
+  errors: number;
   active: number;
 };
 
@@ -246,7 +364,7 @@ export async function getDashboardSummary(
   await assertSiteAccess(siteId);
   const { from, to } = range;
 
-  const [agg, live] = await Promise.all([
+  const [agg, errorsRow, live] = await Promise.all([
     prisma.$queryRaw<
       {
         pageviews: bigint;
@@ -255,6 +373,8 @@ export async function getDashboardSummary(
         referrers: bigint;
         countries: bigint;
         browsers: bigint;
+        sessions: bigint;
+        languages: bigint;
       }[]
     >`
       SELECT
@@ -263,9 +383,16 @@ export async function getDashboardSummary(
         COUNT(DISTINCT "path") AS pages,
         COUNT(DISTINCT "referrer") AS referrers,
         COUNT(DISTINCT "country") AS countries,
-        COUNT(DISTINCT "browser") AS browsers
+        COUNT(DISTINCT "browser") AS browsers,
+        COUNT(DISTINCT "sessionId") AS sessions,
+        COUNT(DISTINCT "language") AS languages
       FROM "Event"
       WHERE ${rangeWhere(siteId, from, to)}`,
+    prisma.$queryRaw<{ count: bigint }[]>`
+      SELECT COUNT(*) AS count
+      FROM "Event"
+      WHERE "siteId" = ${siteId} AND "type" = 'ERROR'::"EventType"
+        AND "timestamp" >= ${from} AND "timestamp" <= ${to}`,
     prisma.$queryRaw<{ count: bigint }[]>`
       SELECT COUNT(DISTINCT "visitorId") AS count
       FROM "Event"
@@ -280,6 +407,9 @@ export async function getDashboardSummary(
     referrers: Number(a?.referrers ?? 0),
     countries: Number(a?.countries ?? 0),
     browsers: Number(a?.browsers ?? 0),
+    sessions: Number(a?.sessions ?? 0),
+    languages: Number(a?.languages ?? 0),
+    errors: Number(errorsRow[0]?.count ?? 0),
     active: Number(live[0]?.count ?? 0),
   };
 }

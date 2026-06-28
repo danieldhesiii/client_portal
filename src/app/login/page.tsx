@@ -48,7 +48,7 @@ export default function LoginPage() {
               />
             </div>
 
-            {state.error && (
+            {state?.error && (
               <p className="text-sm text-[var(--danger)]">{state.error}</p>
             )}
 

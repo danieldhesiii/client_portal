@@ -104,6 +104,9 @@ export async function POST(req: Request) {
         screenWidth: data.screenWidth ?? null,
         language: data.language ?? null,
         durationMs: data.durationMs ?? null,
+        errorKind: data.type === "error" ? (data.errorKind ?? null) : null,
+        errorHost: data.type === "error" ? (data.errorHost ?? null) : null,
+        errorMessage: data.type === "error" ? (data.errorMessage ?? null) : null,
       },
     });
 

@@ -10,7 +10,9 @@ import {
   deleteSite,
   deleteUser,
 } from "@/lib/data/admin";
+import { updateSupportStatus } from "@/lib/data/support";
 import { AccessError } from "@/lib/data/access";
+import type { SupportStatus } from "@prisma/client";
 
 export type ActionState = { ok: boolean; error: string | null };
 const OK: ActionState = { ok: true, error: null };
@@ -100,5 +102,14 @@ export async function deleteSiteAction(formData: FormData): Promise<void> {
 export async function deleteUserAction(formData: FormData): Promise<void> {
   const id = String(formData.get("id"));
   await deleteUser(id);
+  revalidatePath("/admin");
+}
+
+export async function updateSupportStatusAction(
+  formData: FormData,
+): Promise<void> {
+  const id = String(formData.get("id"));
+  const status = String(formData.get("status")) as SupportStatus;
+  await updateSupportStatus(id, status);
   revalidatePath("/admin");
 }

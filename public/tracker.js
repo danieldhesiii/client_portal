@@ -177,6 +177,103 @@
       clearInterval(hbTimer);
     });
 
+    // --- Error & component monitoring (RUM) -------------------------------
+    // Surfaces real-user failures so the portal's Uptime page can show when the
+    // site — or a third-party component it depends on — is misbehaving. Capped
+    // per page so a broken dependency can't flood the ingestion endpoint.
+    var MAX_ERRORS = 15;
+    var errorsSent = 0;
+
+    function hostOf(url) {
+      try {
+        return new URL(url, location.href).hostname || null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function reportError(kind, errHost, message) {
+      try {
+        if (errorsSent >= MAX_ERRORS) return;
+        errorsSent++;
+        var p = basePayload();
+        p.type = "error";
+        p.errorKind = kind;
+        p.errorHost = errHost || null;
+        p.errorMessage = message ? String(message).slice(0, 480) : null;
+        send(p);
+      } catch (e) {}
+    }
+
+    // Failed resource loads (img/script/link/...). Resource error events don't
+    // bubble, so we listen in the capture phase.
+    window.addEventListener(
+      "error",
+      function (e) {
+        try {
+          var t = e && e.target;
+          if (t && t !== window && (t.src || t.href)) {
+            var url = t.src || t.href;
+            reportError(
+              "resource",
+              hostOf(url),
+              (t.tagName || "resource") + " failed to load: " + url,
+            );
+          }
+        } catch (err) {}
+      },
+      true,
+    );
+
+    // Uncaught JS errors and unhandled promise rejections.
+    window.addEventListener("error", function (e) {
+      try {
+        if (e && e.message) reportError("js", null, e.message);
+      } catch (err) {}
+    });
+    window.addEventListener("unhandledrejection", function (e) {
+      try {
+        var r = e && e.reason;
+        reportError("js", null, r && r.message ? r.message : String(r));
+      } catch (err) {}
+    });
+
+    // Wrap fetch to catch failed calls to the components the site relies on
+    // (network errors or 5xx). Our own ingestion endpoint is never reported on,
+    // so a failing beacon can't trigger a self-perpetuating loop.
+    try {
+      if (typeof window.fetch === "function") {
+        var origFetch = window.fetch;
+        window.fetch = function (input) {
+          var url =
+            typeof input === "string"
+              ? input
+              : input && input.url
+                ? input.url
+                : "";
+          if (url && endpoint && url.indexOf(endpoint) === 0) {
+            return origFetch.apply(this, arguments);
+          }
+          return origFetch.apply(this, arguments).then(
+            function (res) {
+              try {
+                if (res && res.status >= 500) {
+                  reportError("fetch", hostOf(url), "HTTP " + res.status + ": " + url);
+                }
+              } catch (e) {}
+              return res;
+            },
+            function (err) {
+              try {
+                reportError("fetch", hostOf(url), "Network request failed: " + url);
+              } catch (e) {}
+              throw err;
+            },
+          );
+        };
+      }
+    } catch (e) {}
+
     // --- Initial view -----------------------------------------------------
     pageview();
   } catch (e) {
