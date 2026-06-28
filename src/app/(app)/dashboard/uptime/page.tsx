@@ -89,7 +89,7 @@ export default async function UptimeSection({
           <CardContent className="pt-6">
             <EmptyState
               title="Monitoring is being set up"
-              description="Synthetic checks run every 5 minutes and real-user signals arrive as visitors load the site. Data will appear here shortly."
+              description="Synthetic checks run once a day and real-user signals arrive as visitors load the site. Data will appear here shortly."
             />
           </CardContent>
         </Card>
