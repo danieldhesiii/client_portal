@@ -174,44 +174,114 @@ async function breakdownBy(
     .map((r) => ({ label: r.label as string, value: Number(r.value) }));
 }
 
-export async function getTopPages(siteId: string, range: DateRange) {
+export async function getTopPages(siteId: string, range: DateRange, limit = 8) {
   await assertSiteAccess(siteId);
-  return breakdownBy(siteId, range, Prisma.sql`"path"`);
+  return breakdownBy(siteId, range, Prisma.sql`"path"`, limit);
 }
 
-export async function getReferrers(siteId: string, range: DateRange) {
+export async function getReferrers(siteId: string, range: DateRange, limit = 8) {
   await assertSiteAccess(siteId);
-  return breakdownBy(siteId, range, Prisma.sql`"referrer"`);
+  return breakdownBy(siteId, range, Prisma.sql`"referrer"`, limit);
 }
 
-export async function getUtmSources(siteId: string, range: DateRange) {
+export async function getUtmSources(siteId: string, range: DateRange, limit = 8) {
   await assertSiteAccess(siteId);
-  return breakdownBy(siteId, range, Prisma.sql`"utmSource"`);
+  return breakdownBy(siteId, range, Prisma.sql`"utmSource"`, limit);
 }
 
-export async function getCountries(siteId: string, range: DateRange) {
+export async function getUtmMediums(siteId: string, range: DateRange, limit = 8) {
   await assertSiteAccess(siteId);
-  return breakdownBy(siteId, range, Prisma.sql`"country"`);
+  return breakdownBy(siteId, range, Prisma.sql`"utmMedium"`, limit);
 }
 
-export async function getCities(siteId: string, range: DateRange) {
+export async function getUtmCampaigns(siteId: string, range: DateRange, limit = 8) {
   await assertSiteAccess(siteId);
-  return breakdownBy(siteId, range, Prisma.sql`"city"`);
+  return breakdownBy(siteId, range, Prisma.sql`"utmCampaign"`, limit);
 }
 
-export async function getBrowsers(siteId: string, range: DateRange) {
+export async function getCountries(siteId: string, range: DateRange, limit = 8) {
   await assertSiteAccess(siteId);
-  return breakdownBy(siteId, range, Prisma.sql`"browser"`);
+  return breakdownBy(siteId, range, Prisma.sql`"country"`, limit);
 }
 
-export async function getOperatingSystems(siteId: string, range: DateRange) {
+export async function getCities(siteId: string, range: DateRange, limit = 8) {
   await assertSiteAccess(siteId);
-  return breakdownBy(siteId, range, Prisma.sql`"os"`);
+  return breakdownBy(siteId, range, Prisma.sql`"city"`, limit);
 }
 
-export async function getDeviceTypes(siteId: string, range: DateRange) {
+export async function getBrowsers(siteId: string, range: DateRange, limit = 8) {
   await assertSiteAccess(siteId);
-  return breakdownBy(siteId, range, Prisma.sql`"deviceType"::text`);
+  return breakdownBy(siteId, range, Prisma.sql`"browser"`, limit);
+}
+
+export async function getOperatingSystems(siteId: string, range: DateRange, limit = 8) {
+  await assertSiteAccess(siteId);
+  return breakdownBy(siteId, range, Prisma.sql`"os"`, limit);
+}
+
+export async function getDeviceTypes(siteId: string, range: DateRange, limit = 8) {
+  await assertSiteAccess(siteId);
+  return breakdownBy(siteId, range, Prisma.sql`"deviceType"::text`, limit);
+}
+
+export type DashboardSummary = {
+  visitors: number;
+  pageviews: number;
+  pages: number;
+  referrers: number;
+  countries: number;
+  browsers: number;
+  active: number;
+};
+
+/**
+ * Compact per-section counts powering the left section-nav summaries. Kept to
+ * two scans (one over the range, one over the last 5 min) so it's cheap enough
+ * to fetch on every nav render.
+ */
+export async function getDashboardSummary(
+  siteId: string,
+  range: DateRange,
+): Promise<DashboardSummary> {
+  await assertSiteAccess(siteId);
+  const { from, to } = range;
+
+  const [agg, live] = await Promise.all([
+    prisma.$queryRaw<
+      {
+        pageviews: bigint;
+        visitors: bigint;
+        pages: bigint;
+        referrers: bigint;
+        countries: bigint;
+        browsers: bigint;
+      }[]
+    >`
+      SELECT
+        COUNT(*) AS pageviews,
+        COUNT(DISTINCT "visitorId") AS visitors,
+        COUNT(DISTINCT "path") AS pages,
+        COUNT(DISTINCT "referrer") AS referrers,
+        COUNT(DISTINCT "country") AS countries,
+        COUNT(DISTINCT "browser") AS browsers
+      FROM "Event"
+      WHERE ${rangeWhere(siteId, from, to)}`,
+    prisma.$queryRaw<{ count: bigint }[]>`
+      SELECT COUNT(DISTINCT "visitorId") AS count
+      FROM "Event"
+      WHERE "siteId" = ${siteId} AND "timestamp" >= ${new Date(Date.now() - 5 * 60 * 1000)}`,
+  ]);
+
+  const a = agg[0];
+  return {
+    pageviews: Number(a?.pageviews ?? 0),
+    visitors: Number(a?.visitors ?? 0),
+    pages: Number(a?.pages ?? 0),
+    referrers: Number(a?.referrers ?? 0),
+    countries: Number(a?.countries ?? 0),
+    browsers: Number(a?.browsers ?? 0),
+    active: Number(live[0]?.count ?? 0),
+  };
 }
 
 /** Visitors active in the last 5 minutes, plus a small live page breakdown. */

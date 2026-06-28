@@ -29,7 +29,10 @@ export function TopNav({
   function onSiteChange(siteId: string) {
     const params = new URLSearchParams(searchParams.toString());
     params.set("site", siteId);
-    router.push(`/dashboard?${params.toString()}`);
+    // Stay on the current dashboard section when switching site; from non-
+    // dashboard pages (e.g. Admin) jump to the dashboard overview.
+    const base = pathname.startsWith("/dashboard") ? pathname : "/dashboard";
+    router.push(`${base}?${params.toString()}`);
   }
 
   const links = [

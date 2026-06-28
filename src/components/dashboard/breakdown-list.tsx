@@ -1,3 +1,5 @@
+import Link from "next/link";
+import { ArrowRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/misc";
 import { formatNumber } from "@/lib/utils";
@@ -11,16 +13,16 @@ export function BreakdownList({
   title,
   items,
   emptyLabel = "No data yet",
-  labelHeader = "Name",
   valueHeader = "Visitors",
   formatLabel,
+  viewAllHref,
 }: {
   title: string;
   items: Breakdown[];
   emptyLabel?: string;
-  labelHeader?: string;
   valueHeader?: string;
   formatLabel?: (label: string) => string;
+  viewAllHref?: string;
 }) {
   const max = items.reduce((m, i) => Math.max(m, i.value), 0) || 1;
 
@@ -28,8 +30,17 @@ export function BreakdownList({
     <Card>
       <CardHeader className="flex-row items-center justify-between">
         <CardTitle>{title}</CardTitle>
-        {items.length > 0 && (
-          <span className="text-xs text-muted-foreground">{valueHeader}</span>
+        {viewAllHref ? (
+          <Link
+            href={viewAllHref}
+            className="inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+          >
+            View all <ArrowRight size={12} />
+          </Link>
+        ) : (
+          items.length > 0 && (
+            <span className="text-xs text-muted-foreground">{valueHeader}</span>
+          )
         )}
       </CardHeader>
       <CardContent>
