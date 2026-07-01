@@ -64,7 +64,7 @@ export default async function SupportCategoryPage({
       ) : (
         <div className="space-y-6">
           {/* Keep the request list in sync as the agency replies / updates status. */}
-          <AutoRefresh interval={8000} />
+          <AutoRefresh interval={20000} />
           <Card>
             <CardHeader>
               <CardTitle className="text-base text-foreground">

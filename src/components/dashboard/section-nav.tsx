@@ -200,7 +200,7 @@ export function SectionNav({
     }
     load();
     // Refresh periodically so the "active now" figure stays live.
-    const id = setInterval(load, 15_000);
+    const id = setInterval(load, 30_000);
     return () => {
       active = false;
       clearInterval(id);

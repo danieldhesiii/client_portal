@@ -9,7 +9,7 @@ import { useRouter } from "next/navigation";
  * soft `router.refresh()`, client state (e.g. a half-typed reply) is preserved.
  * Pauses while the tab is hidden to avoid needless work.
  */
-export function AutoRefresh({ interval = 5000 }: { interval?: number }) {
+export function AutoRefresh({ interval = 20000 }: { interval?: number }) {
   const router = useRouter();
   useEffect(() => {
     const id = setInterval(() => {

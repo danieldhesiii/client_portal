@@ -1,8 +1,23 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { assertSiteAccess } from "./access";
+import { cached } from "./cache";
 import type { DateRange } from "@/lib/date-range";
 import { eachHourOfInterval, eachDayOfInterval, startOfDay, startOfHour } from "date-fns";
+
+/**
+ * Stable cache signature for a range. The `to` bound is `Date.now()` and so
+ * rolls every request; keying on it directly would never hit. Instead we bucket
+ * live ranges into 30s windows (matching CACHE_TTL_MS) so all navigation and
+ * polling within that window share one result, while fixed custom ranges key on
+ * their exact bounds.
+ */
+function sig(range: DateRange): string {
+  if (range.key === "custom") {
+    return `custom:${range.from.getTime()}:${range.to.getTime()}`;
+  }
+  return `${range.key}:${Math.floor(Date.now() / 30_000)}`;
+}
 
 /**
  * Analytics read layer. Every exported function calls `assertSiteAccess(siteId)`
@@ -79,34 +94,36 @@ export async function getOverviewStats(
   range: DateRange,
 ): Promise<OverviewStats> {
   await assertSiteAccess(siteId);
-  const { from, to, prevFrom, prevTo } = range;
+  return cached(`overview:${siteId}:${sig(range)}`, async () => {
+    const { from, to, prevFrom, prevTo } = range;
 
-  const [
-    visitors,
-    prevVisitors,
-    pageviews,
-    prevPageviews,
-    dur,
-    prevDur,
-    bounce,
-    prevBounce,
-  ] = await Promise.all([
-    uniqueVisitors(siteId, from, to),
-    uniqueVisitors(siteId, prevFrom, prevTo),
-    pageviewCount(siteId, from, to),
-    pageviewCount(siteId, prevFrom, prevTo),
-    avgDuration(siteId, from, to),
-    avgDuration(siteId, prevFrom, prevTo),
-    bounceRate(siteId, from, to),
-    bounceRate(siteId, prevFrom, prevTo),
-  ]);
+    const [
+      visitors,
+      prevVisitors,
+      pageviews,
+      prevPageviews,
+      dur,
+      prevDur,
+      bounce,
+      prevBounce,
+    ] = await Promise.all([
+      uniqueVisitors(siteId, from, to),
+      uniqueVisitors(siteId, prevFrom, prevTo),
+      pageviewCount(siteId, from, to),
+      pageviewCount(siteId, prevFrom, prevTo),
+      avgDuration(siteId, from, to),
+      avgDuration(siteId, prevFrom, prevTo),
+      bounceRate(siteId, from, to),
+      bounceRate(siteId, prevFrom, prevTo),
+    ]);
 
-  return {
-    visitors: { value: visitors, previous: prevVisitors },
-    pageviews: { value: pageviews, previous: prevPageviews },
-    avgDurationMs: { value: dur, previous: prevDur },
-    bounceRate: { value: bounce, previous: prevBounce },
-  };
+    return {
+      visitors: { value: visitors, previous: prevVisitors },
+      pageviews: { value: pageviews, previous: prevPageviews },
+      avgDurationMs: { value: dur, previous: prevDur },
+      bounceRate: { value: bounce, previous: prevBounce },
+    };
+  });
 }
 
 export async function getTimeseries(
@@ -117,9 +134,8 @@ export async function getTimeseries(
   const { from, to, granularity } = range;
   const unit = granularity === "hour" ? "hour" : "day";
 
-  const rows = await prisma.$queryRaw<
-    { bucket: Date; pageviews: bigint; visitors: bigint }[]
-  >`
+  const rows = await cached(`ts:${siteId}:${sig(range)}:${unit}`, () =>
+    prisma.$queryRaw<{ bucket: Date; pageviews: bigint; visitors: bigint }[]>`
     SELECT
       date_trunc(${unit}, "timestamp") AS bucket,
       COUNT(*) AS pageviews,
@@ -127,7 +143,8 @@ export async function getTimeseries(
     FROM "Event"
     WHERE ${rangeWhere(siteId, from, to)}
     GROUP BY bucket
-    ORDER BY bucket ASC`;
+    ORDER BY bucket ASC`,
+  );
 
   const map = new Map<number, { pageviews: number; visitors: number }>();
   for (const r of rows) {
@@ -157,76 +174,81 @@ export async function getTimeseries(
 async function breakdownBy(
   siteId: string,
   range: DateRange,
+  cacheKey: string,
   column: Prisma.Sql,
   limit = 8,
 ): Promise<Breakdown[]> {
-  const { from, to } = range;
-  const rows = await prisma.$queryRaw<{ label: string | null; value: bigint }[]>`
-    SELECT ${column} AS label, COUNT(*) AS value
-    FROM "Event"
-    WHERE ${rangeWhere(siteId, from, to)}
-    GROUP BY label
-    ORDER BY value DESC
-    LIMIT ${limit + 5}`;
-  return rows
-    .filter((r) => r.label != null && r.label !== "")
-    .slice(0, limit)
-    .map((r) => ({ label: r.label as string, value: Number(r.value) }));
+  return cached(`bd:${cacheKey}:${siteId}:${sig(range)}:${limit}`, async () => {
+    const { from, to } = range;
+    const rows = await prisma.$queryRaw<
+      { label: string | null; value: bigint }[]
+    >`
+      SELECT ${column} AS label, COUNT(*) AS value
+      FROM "Event"
+      WHERE ${rangeWhere(siteId, from, to)}
+      GROUP BY label
+      ORDER BY value DESC
+      LIMIT ${limit + 5}`;
+    return rows
+      .filter((r) => r.label != null && r.label !== "")
+      .slice(0, limit)
+      .map((r) => ({ label: r.label as string, value: Number(r.value) }));
+  });
 }
 
 export async function getTopPages(siteId: string, range: DateRange, limit = 8) {
   await assertSiteAccess(siteId);
-  return breakdownBy(siteId, range, Prisma.sql`"path"`, limit);
+  return breakdownBy(siteId, range, "pages", Prisma.sql`"path"`, limit);
 }
 
 export async function getReferrers(siteId: string, range: DateRange, limit = 8) {
   await assertSiteAccess(siteId);
-  return breakdownBy(siteId, range, Prisma.sql`"referrer"`, limit);
+  return breakdownBy(siteId, range, "referrers", Prisma.sql`"referrer"`, limit);
 }
 
 export async function getUtmSources(siteId: string, range: DateRange, limit = 8) {
   await assertSiteAccess(siteId);
-  return breakdownBy(siteId, range, Prisma.sql`"utmSource"`, limit);
+  return breakdownBy(siteId, range, "utmSource", Prisma.sql`"utmSource"`, limit);
 }
 
 export async function getUtmMediums(siteId: string, range: DateRange, limit = 8) {
   await assertSiteAccess(siteId);
-  return breakdownBy(siteId, range, Prisma.sql`"utmMedium"`, limit);
+  return breakdownBy(siteId, range, "utmMedium", Prisma.sql`"utmMedium"`, limit);
 }
 
 export async function getUtmCampaigns(siteId: string, range: DateRange, limit = 8) {
   await assertSiteAccess(siteId);
-  return breakdownBy(siteId, range, Prisma.sql`"utmCampaign"`, limit);
+  return breakdownBy(siteId, range, "utmCampaign", Prisma.sql`"utmCampaign"`, limit);
 }
 
 export async function getCountries(siteId: string, range: DateRange, limit = 8) {
   await assertSiteAccess(siteId);
-  return breakdownBy(siteId, range, Prisma.sql`"country"`, limit);
+  return breakdownBy(siteId, range, "country", Prisma.sql`"country"`, limit);
 }
 
 export async function getCities(siteId: string, range: DateRange, limit = 8) {
   await assertSiteAccess(siteId);
-  return breakdownBy(siteId, range, Prisma.sql`"city"`, limit);
+  return breakdownBy(siteId, range, "city", Prisma.sql`"city"`, limit);
 }
 
 export async function getBrowsers(siteId: string, range: DateRange, limit = 8) {
   await assertSiteAccess(siteId);
-  return breakdownBy(siteId, range, Prisma.sql`"browser"`, limit);
+  return breakdownBy(siteId, range, "browser", Prisma.sql`"browser"`, limit);
 }
 
 export async function getOperatingSystems(siteId: string, range: DateRange, limit = 8) {
   await assertSiteAccess(siteId);
-  return breakdownBy(siteId, range, Prisma.sql`"os"`, limit);
+  return breakdownBy(siteId, range, "os", Prisma.sql`"os"`, limit);
 }
 
 export async function getDeviceTypes(siteId: string, range: DateRange, limit = 8) {
   await assertSiteAccess(siteId);
-  return breakdownBy(siteId, range, Prisma.sql`"deviceType"::text`, limit);
+  return breakdownBy(siteId, range, "deviceType", Prisma.sql`"deviceType"::text`, limit);
 }
 
 export async function getLanguages(siteId: string, range: DateRange, limit = 8) {
   await assertSiteAccess(siteId);
-  return breakdownBy(siteId, range, Prisma.sql`"language"`, limit);
+  return breakdownBy(siteId, range, "language", Prisma.sql`"language"`, limit);
 }
 
 /**
@@ -242,7 +264,9 @@ async function sessionEdgePages(
 ): Promise<Breakdown[]> {
   const { from, to } = range;
   const dir = order === "ASC" ? Prisma.sql`ASC` : Prisma.sql`DESC`;
-  const rows = await prisma.$queryRaw<{ label: string; value: bigint }[]>`
+  const rows = await cached(
+    `edge:${order}:${siteId}:${sig(range)}:${limit}`,
+    () => prisma.$queryRaw<{ label: string; value: bigint }[]>`
     SELECT label, COUNT(*) AS value
     FROM (
       SELECT DISTINCT ON ("sessionId") "path" AS label
@@ -252,7 +276,8 @@ async function sessionEdgePages(
     ) edges
     GROUP BY label
     ORDER BY value DESC
-    LIMIT ${limit}`;
+    LIMIT ${limit}`,
+  );
   return rows.map((r) => ({ label: r.label, value: Number(r.value) }));
 }
 
@@ -273,7 +298,8 @@ export async function getScreenSizes(
 ): Promise<Breakdown[]> {
   await assertSiteAccess(siteId);
   const { from, to } = range;
-  const rows = await prisma.$queryRaw<{ label: string; value: bigint }[]>`
+  const rows = await cached(`screen:${siteId}:${sig(range)}`, () =>
+    prisma.$queryRaw<{ label: string; value: bigint }[]>`
     SELECT
       CASE
         WHEN "screenWidth" < 640 THEN 'Mobile'
@@ -285,7 +311,8 @@ export async function getScreenSizes(
     FROM "Event"
     WHERE ${rangeWhere(siteId, from, to)} AND "screenWidth" IS NOT NULL
     GROUP BY label
-    ORDER BY value DESC`;
+    ORDER BY value DESC`,
+  );
   return rows.map((r) => ({ label: r.label, value: Number(r.value) }));
 }
 
@@ -302,23 +329,25 @@ export async function getEngagement(
   range: DateRange,
 ): Promise<Engagement> {
   await assertSiteAccess(siteId);
-  const { from, to } = range;
-  const [rows, dur, bounce] = await Promise.all([
-    prisma.$queryRaw<{ sessions: bigint; pageviews: bigint }[]>`
-      SELECT COUNT(DISTINCT "sessionId") AS sessions, COUNT(*) AS pageviews
-      FROM "Event"
-      WHERE ${rangeWhere(siteId, from, to)}`,
-    avgDuration(siteId, from, to),
-    bounceRate(siteId, from, to),
-  ]);
-  const sessions = Number(rows[0]?.sessions ?? 0);
-  const pageviews = Number(rows[0]?.pageviews ?? 0);
-  return {
-    sessions,
-    pagesPerSession: sessions === 0 ? 0 : pageviews / sessions,
-    avgSessionMs: dur,
-    bounceRate: bounce,
-  };
+  return cached(`eng:${siteId}:${sig(range)}`, async () => {
+    const { from, to } = range;
+    const [rows, dur, bounce] = await Promise.all([
+      prisma.$queryRaw<{ sessions: bigint; pageviews: bigint }[]>`
+        SELECT COUNT(DISTINCT "sessionId") AS sessions, COUNT(*) AS pageviews
+        FROM "Event"
+        WHERE ${rangeWhere(siteId, from, to)}`,
+      avgDuration(siteId, from, to),
+      bounceRate(siteId, from, to),
+    ]);
+    const sessions = Number(rows[0]?.sessions ?? 0);
+    const pageviews = Number(rows[0]?.pageviews ?? 0);
+    return {
+      sessions,
+      pagesPerSession: sessions === 0 ? 0 : pageviews / sessions,
+      avgSessionMs: dur,
+      bounceRate: bounce,
+    };
+  });
 }
 
 /** Pageviews per hour-of-day (0–23, UTC) — a 24-length array for the heatbar. */
@@ -328,12 +357,14 @@ export async function getActivityByHour(
 ): Promise<number[]> {
   await assertSiteAccess(siteId);
   const { from, to } = range;
-  const rows = await prisma.$queryRaw<{ hour: number; value: bigint }[]>`
+  const rows = await cached(`hour:${siteId}:${sig(range)}`, () =>
+    prisma.$queryRaw<{ hour: number; value: bigint }[]>`
     SELECT EXTRACT(HOUR FROM "timestamp")::int AS hour, COUNT(*) AS value
     FROM "Event"
     WHERE ${rangeWhere(siteId, from, to)}
     GROUP BY hour
-    ORDER BY hour`;
+    ORDER BY hour`,
+  );
   const buckets = Array.from({ length: 24 }, () => 0);
   for (const r of rows) buckets[r.hour] = Number(r.value);
   return buckets;
@@ -362,6 +393,7 @@ export async function getDashboardSummary(
   range: DateRange,
 ): Promise<DashboardSummary> {
   await assertSiteAccess(siteId);
+  return cached(`summary:${siteId}:${sig(range)}`, async () => {
   const { from, to } = range;
 
   const [agg, errorsRow, live] = await Promise.all([
@@ -412,6 +444,7 @@ export async function getDashboardSummary(
     errors: Number(errorsRow[0]?.count ?? 0),
     active: Number(live[0]?.count ?? 0),
   };
+  });
 }
 
 /** Visitors active in the last 5 minutes, plus a small live page breakdown. */

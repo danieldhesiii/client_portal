@@ -9,7 +9,7 @@ type RealtimeData = {
   topPages: { label: string; value: number }[];
 };
 
-/** Live "visitors in the last 5 minutes" panel; polls every 10s. */
+/** Live "visitors in the last 5 minutes" panel; polls every 30s. */
 export function Realtime({ siteId }: { siteId: string }) {
   const [data, setData] = useState<RealtimeData | null>(null);
 
@@ -28,7 +28,7 @@ export function Realtime({ siteId }: { siteId: string }) {
       }
     }
     load();
-    const id = setInterval(load, 10_000);
+    const id = setInterval(load, 30_000);
     return () => {
       active = false;
       clearInterval(id);

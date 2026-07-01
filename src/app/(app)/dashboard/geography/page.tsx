@@ -4,7 +4,7 @@ import { resolveDashboardContext } from "@/lib/data/dashboard-context";
 import { getCountries, getCities } from "@/lib/data/analytics";
 import { SectionHeader } from "@/components/dashboard/section-header";
 import { DetailTable } from "@/components/dashboard/detail-table";
-import { WorldMap } from "@/components/dashboard/world-map";
+import { WorldMapLazy } from "@/components/dashboard/world-map-lazy";
 
 export const dynamic = "force-dynamic";
 
@@ -31,7 +31,7 @@ export default async function GeographySection({
         never stored.
       </p>
       <div className="mb-4">
-        <WorldMap data={countries} />
+        <WorldMapLazy data={countries} />
       </div>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <DetailTable

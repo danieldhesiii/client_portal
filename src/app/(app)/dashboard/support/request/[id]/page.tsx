@@ -35,7 +35,7 @@ export default async function SupportRequestPage({
   return (
     <div className="mx-auto max-w-3xl">
       {/* Live: surfaces the agency's replies without a manual refresh. */}
-      <AutoRefresh interval={5000} />
+      <AutoRefresh interval={15000} />
       <Link
         href={backHref}
         className="mb-4 inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"

@@ -38,7 +38,7 @@ export default async function AdminPage() {
   return (
     <div className="space-y-8">
       {/* Live: new client messages and replies appear without a manual refresh. */}
-      <AutoRefresh interval={8000} />
+      <AutoRefresh interval={20000} />
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Admin</h1>
         <p className="text-sm text-muted-foreground">
